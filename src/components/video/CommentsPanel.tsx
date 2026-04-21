@@ -40,6 +40,21 @@ export function CommentsPanel({
   }, [videoId]);
 
   useEffect(() => {
+    if (partyHost) return;
+    // Fallback: poll every 8s when PartyKit isn't configured
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/comments/${videoId}`);
+        const j = await res.json();
+        if (j?.data?.comments) setComments(j.data.comments as Comment[]);
+      } catch {
+        /* ignore */
+      }
+    }, 8000);
+    return () => clearInterval(iv);
+  }, [videoId, partyHost]);
+
+  useEffect(() => {
     if (!partyHost) return;
     const socket = new PartySocket({
       host: partyHost,
