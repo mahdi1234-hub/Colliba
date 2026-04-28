@@ -1,0 +1,9 @@
+{
+  "$schema": "https://www.partykit.io/schema.json",
+  "name": "colliba",
+  "main": "party/video.ts",
+  "parties": {
+    "video": "party/video.ts"
+  },
+  "compatibilityDate": "2024-09-01"
+}

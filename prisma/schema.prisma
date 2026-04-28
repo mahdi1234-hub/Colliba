@@ -1,0 +1,226 @@
+// Colliba Prisma schema — mirrors the doc's service boundaries in a single Postgres DB.
+// Each "service" in the doc maps to a domain inside this schema.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -------- Auth / Users --------
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  username        String   @unique
+  name            String?
+  passwordHash    String
+  emailVerifiedAt DateTime?
+  avatarUrl       String?
+  bio             String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  videos          Video[]
+  comments        Comment[]
+  likes           Like[]
+  follows         Follow[] @relation("follower")
+  followers       Follow[] @relation("following")
+  events          Event[]
+  sessions        AuthSession[]
+  emailTokens     EmailToken[]
+  engagement      EngagementSample[]
+  banditArms      BanditState[]
+  liveStreams     LiveStream[]
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model EmailToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  purpose   String   // "verify_email" | "password_reset"
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, purpose])
+}
+
+// -------- Video (upload + transcoding + playback) --------
+
+enum VideoStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  ERRORED
+}
+
+model Video {
+  id             String      @id @default(cuid())
+  authorId       String
+  author         User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  tags           String[]    @default([])
+  status         VideoStatus @default(UPLOADING)
+  muxAssetId     String?     @unique
+  muxUploadId    String?     @unique
+  muxPlaybackId  String?     @unique
+  durationSec    Float?
+  aspectRatio    String?
+  thumbnailUrl   String?
+  views          Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  comments       Comment[]
+  likes          Like[]
+  events         Event[]
+  engagement     EngagementSample[]
+  embeddings     VideoEmbedding?
+
+  @@index([authorId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model VideoEmbedding {
+  videoId   String   @id
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  // 384-dim sentence-transformers style; stored as float array since pgvector isn't guaranteed.
+  embedding Float[]
+  updatedAt DateTime @updatedAt
+}
+
+// -------- Live streaming --------
+
+enum LiveStatus {
+  IDLE
+  ACTIVE
+  DISCONNECTED
+  COMPLETED
+}
+
+model LiveStream {
+  id              String     @id @default(cuid())
+  hostId          String
+  host            User       @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  muxStreamId     String?    @unique
+  muxPlaybackId   String?    @unique
+  streamKey       String?    // stored server-only; revealed only to host
+  status          LiveStatus @default(IDLE)
+  viewerPeak      Int        @default(0)
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime   @default(now())
+
+  @@index([hostId])
+  @@index([status])
+}
+
+// -------- Social graph + interactions --------
+
+model Follow {
+  followerId  String
+  follower    User   @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following   User   @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@id([followerId, followingId])
+  @@index([followingId])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  videoId   String
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([videoId])
+  @@index([authorId])
+}
+
+model Like {
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId   String
+  video     Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, videoId])
+  @@index([videoId])
+}
+
+// -------- Activity / event bus (Postgres-backed replacement for Kafka) --------
+
+model Event {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  videoId   String?
+  video     Video?   @relation(fields: [videoId], references: [id], onDelete: SetNull)
+  kind      String   // view_start, view_progress, view_complete, like, unlike, comment, share, follow, search, live_join, live_leave, impression, click
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([videoId, createdAt])
+  @@index([kind, createdAt])
+}
+
+// -------- Biometric engagement --------
+
+model EngagementSample {
+  id          BigInt   @id @default(autoincrement())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId     String
+  video       Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  t           Float    // position in video (seconds)
+  score       Float    // 0..1 composite engagement score
+  emotions    Json     @default("{}") // {happy, surprised, neutral, sad, angry, fearful, disgusted}
+  createdAt   DateTime @default(now())
+
+  @@index([videoId, t])
+  @@index([userId, createdAt])
+}
+
+// -------- Reinforcement learning state --------
+// LinUCB / contextual bandit — one row per (user, feature-bucket) arm.
+
+model BanditState {
+  id         String  @id @default(cuid())
+  userId     String
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  armKey     String  // e.g. "tag:music" or "creator:<id>"
+  alpha      Float   @default(1.0) // successes
+  beta       Float   @default(1.0) // failures
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, armKey])
+  @@index([userId])
+}
