@@ -15,15 +15,30 @@ export async function POST(req: Request) {
   const me = await getCurrentUser();
   if (!me) return fail("Unauthorized", 401);
   if (!hasMux()) return fail("Mux is not configured", 500);
+  let body: z.infer<typeof CreateBody>;
   try {
-    const body = CreateBody.parse(await req.json());
-    const stream = await mux().video.liveStreams.create({
+    body = CreateBody.parse(await req.json());
+  } catch (e) {
+    if (e instanceof Response) return e;
+    return fail("Invalid request body", 400);
+  }
+  let stream;
+  try {
+    // Note: latency_mode "low" / "reduced" require a paid Mux account.
+    // Default ("standard") works on the free Development environment.
+    stream = await mux().video.liveStreams.create({
       playback_policy: ["public"],
       new_asset_settings: { playback_policy: ["public"] },
-      latency_mode: "low",
       reconnect_window: 60,
       passthrough: `colliba:${me.id}`
     });
+  } catch (e) {
+    const msg =
+      e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e);
+    console.error("[live] mux.liveStreams.create failed:", msg, e);
+    return fail(`Mux error: ${msg}`, 502);
+  }
+  try {
     const live = await prisma.liveStream.create({
       data: {
         hostId: me.id,
@@ -31,7 +46,7 @@ export async function POST(req: Request) {
         description: body.description ?? null,
         muxStreamId: stream.id,
         muxPlaybackId: stream.playback_ids?.[0]?.id ?? null,
-        streamKey: stream.stream_key,
+        streamKey: stream.stream_key ?? null,
         status: "IDLE"
       }
     });
@@ -43,8 +58,10 @@ export async function POST(req: Request) {
       rtmpUrl: "rtmps://global-live.mux.com:443/app"
     });
   } catch (e) {
-    if (e instanceof Response) return e;
-    return fail("Could not create live stream", 500);
+    const msg =
+      e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e);
+    console.error("[live] prisma.liveStream.create failed:", msg, e);
+    return fail(`Database error: ${msg}`, 500);
   }
 }
 

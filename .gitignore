@@ -11,3 +11,6 @@ dist
 .partykit
 coverage
 .turbo
+
+tsconfig.tsbuildinfo
+test-plan.md

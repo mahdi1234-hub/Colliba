@@ -58,9 +58,9 @@ export default async function LibraryPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  {v.status === "READY" && (
-                    <Link href={`/watch/${v.id}`} className="btn-ghost text-[11px]">View</Link>
-                  )}
+                  <Link href={`/watch/${v.id}`} className="btn-ghost text-[11px]">
+                    {v.status === "READY" ? "View" : "Preview"}
+                  </Link>
                   <DeleteVideoButton id={v.id} />
                 </div>
               </div>

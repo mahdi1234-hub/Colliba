@@ -11,11 +11,10 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") ?? "").trim();
   const me = await getCurrentUser();
-  if (!q) return ok({ videos: [] });
+  if (!q) return ok({ videos: [], creators: [] });
   await emit({ kind: "search", userId: me?.id, payload: { q } });
 
   // Lexical match (ILIKE) + tag match
-  const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
   const lexical = await prisma.video.findMany({
     where: {
       status: "READY",
@@ -44,9 +43,45 @@ export async function GET(req: Request) {
     })
     .sort((a, b) => b.score - a.score)
     .map(({ v }) => v);
-  // Strip embedding before returning
-  return ok({
-    videos: ranked.map(({ embeddings: _e, ...rest }) => rest)
+
+  // Creator search — match username or name (case-insensitive)
+  const creatorRows = await prisma.user.findMany({
+    where: {
+      OR: [
+        { username: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } }
+      ]
+    },
+    select: {
+      id: true,
+      username: true,
+      name: true,
+      avatarUrl: true,
+      bio: true,
+      _count: { select: { videos: true, followers: true } }
+    },
+    take: 24
   });
-  void like; // referenced for future pg_trgm upgrade
+
+  const lower = q.toLowerCase();
+  const creators = creatorRows
+    .map((c) => {
+      const u = c.username.toLowerCase();
+      const n = (c.name ?? "").toLowerCase();
+      let score = 0;
+      if (u === lower) score += 5;
+      else if (u.startsWith(lower)) score += 3;
+      else if (u.includes(lower)) score += 1;
+      if (n === lower) score += 4;
+      else if (n.startsWith(lower)) score += 2;
+      else if (n.includes(lower)) score += 1;
+      return { c, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map(({ c }) => c);
+
+  return ok({
+    videos: ranked.map(({ embeddings: _e, ...rest }) => rest),
+    creators
+  });
 }
